@@ -1,99 +1,254 @@
 const express = require('express');
 const webpush = require('web-push');
+const { body, validationResult } = require('express-validator');
+const { User, Subscription, Notification } = require('../models');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
 const router = express.Router();
 
 console.log('📧 Loading notification routes...');
 
-// Simple middleware to log requests
-router.use((req, res, next) => {
-  console.log(`🔔 Notification route: ${req.method} ${req.path}`);
-  next();
-});
-
-// Mock user authentication middleware (replace with real auth later)
-const mockAuth = (req, res, next) => {
-  // For testing, create a mock user
-  req.user = {
-    _id: 'mock-user-id',
-    username: 'test-admin',
-    role: 'admin'
-  };
-  next();
-};
+// Simplified validation - only validate required fields
+const notificationValidation = [
+  body('title').isLength({ min: 1, max: 100 }).trim().escape(),
+  body('message').isLength({ min: 1, max: 500 }).trim().escape()
+];
 
 // Send notification to all users (Admin only)
-router.post('/send-to-all', mockAuth, async (req, res) => {
+router.post('/send-to-all', verifyToken, requireAdmin, notificationValidation, async (req, res) => {
   try {
-    console.log('📧 Send to all route called');
-    console.log('Request body:', req.body);
+    console.log('📧 === SEND TO ALL REQUEST ===');
+    console.log('📧 User:', req.user ? { id: req.user._id, username: req.user.username, role: req.user.role } : 'No user');
+    console.log('📧 Request body:', req.body);
     
-    const { title, message, icon = '/icon.png', url = '/' } = req.body;
-
-    if (!title || !message) {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('📧 ❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
-        message: 'Title and message are required'
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+    
+    const { title, message } = req.body;
+    console.log('📧 Processed data:', { title, message });
+
+    // Get all active subscriptions
+    console.log('📧 Looking for active subscriptions...');
+    const subscriptions = await Subscription.find({ isActive: true }).populate('userId');
+    console.log('📧 Found subscriptions:', subscriptions.length);
+    
+    if (subscriptions.length === 0) {
+      console.log('📧 No active subscriptions found');
+      return res.json({
+        success: true,
+        message: 'No active subscriptions found',
+        data: {
+          totalSent: 0,
+          delivered: 0,
+          failed: 0
+        }
       });
     }
 
-    // For now, just return success without actually sending
-    // In production, this would get subscriptions from database and send notifications
-    const mockResult = {
-      totalSent: 0,
-      delivered: 0,
-      failed: 0,
-      notificationId: 'mock-notification-id'
-    };
+    // Create notification record
+    console.log('📧 Creating notification record...');
+    const notification = new Notification({
+      title,
+      message,
+      icon: '/logo192.png', // Default icon
+      url: '/dashboard',     // Default URL
+      sentBy: req.user._id,
+      sentTo: subscriptions.map(sub => sub.userId._id),
+      totalSent: subscriptions.length
+    });
 
-    console.log('📧 Mock notification created:', { title, message });
+    const payload = JSON.stringify({
+      title,
+      body: message,
+      icon: '/logo192.png',
+      url: '/dashboard'
+    });
+    console.log('📧 Notification payload:', payload);
+
+    console.log('📧 Sending to', subscriptions.length, 'subscribers...');
+    const deliveryPromises = subscriptions.map(async (subscription) => {
+      try {
+        await webpush.sendNotification(subscription, payload);
+        
+        notification.deliveryStatus.push({
+          userId: subscription.userId._id,
+          status: 'delivered',
+          deliveredAt: new Date()
+        });
+        
+        return { success: true, userId: subscription.userId._id };
+      } catch (error) {
+        console.error('📧 Notification delivery failed:', error);
+        
+        // Mark subscription as inactive if endpoint is invalid
+        if (error.statusCode === 410) {
+          await Subscription.findByIdAndUpdate(subscription._id, { isActive: false });
+        }
+        
+        notification.deliveryStatus.push({
+          userId: subscription.userId._id,
+          status: 'failed',
+          error: error.message
+        });
+        
+        return { success: false, userId: subscription.userId._id, error: error.message };
+      }
+    });
+
+    const results = await Promise.all(deliveryPromises);
+    const delivered = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+
+    // Update notification with final counts
+    notification.totalDelivered = delivered;
+    notification.totalFailed = failed;
+    await notification.save();
+
+    console.log('📧 ✅ Notification sent to all users:', { delivered, failed });
 
     res.json({
       success: true,
-      message: 'Notification sent successfully (mock)',
-      data: mockResult
+      message: 'Notification sent successfully',
+      data: {
+        notificationId: notification._id,
+        totalSent: subscriptions.length,
+        delivered,
+        failed
+      }
     });
 
   } catch (error) {
-    console.error('❌ Send notification error:', error);
+    console.error('📧 ❌ Send notification error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to send notification'
+      message: 'Failed to send notification',
+      error: error.message
     });
   }
 });
 
 // Send notification to specific users (Admin only)
-router.post('/send-to-users', mockAuth, async (req, res) => {
+router.post('/send-to-users', verifyToken, requireAdmin, notificationValidation, async (req, res) => {
   try {
-    console.log('📧 Send to users route called');
-    console.log('Request body:', req.body);
+    console.log('📧 === SEND TO USERS REQUEST ===');
+    console.log('📧 User:', req.user ? { id: req.user._id, username: req.user.username, role: req.user.role } : 'No user');
+    console.log('📧 Request body:', req.body);
     
-    const { title, message, userIds, icon = '/icon.png', url = '/' } = req.body;
-
-    if (!title || !message || !userIds || !Array.isArray(userIds)) {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('📧 ❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
-        message: 'Title, message, and userIds array are required'
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+    
+    const { title, message, userIds } = req.body;
+
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+      console.log('📧 ❌ Invalid userIds:', userIds);
+      return res.status(400).json({
+        success: false,
+        message: 'UserIds array is required and cannot be empty'
       });
     }
 
-    const mockResult = {
-      totalSent: userIds.length,
-      delivered: userIds.length,
-      failed: 0,
-      notificationId: 'mock-notification-id-targeted'
-    };
+    // Get subscriptions for specified users
+    const subscriptions = await Subscription.find({
+      userId: { $in: userIds },
+      isActive: true
+    }).populate('userId');
 
-    console.log('📧 Mock targeted notification created:', { title, message, userCount: userIds.length });
+    console.log('📧 Found', subscriptions.length, 'subscriptions for', userIds.length, 'users');
+
+    if (subscriptions.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No active subscriptions found for specified users',
+        data: {
+          totalSent: 0,
+          delivered: 0,
+          failed: 0
+        }
+      });
+    }
+
+    // Create notification record
+    const notification = new Notification({
+      title,
+      message,
+      icon: '/logo192.png', // Default icon
+      url: '/dashboard',     // Default URL
+      sentBy: req.user._id,
+      sentTo: userIds,
+      totalSent: subscriptions.length
+    });
+
+    const payload = JSON.stringify({
+      title,
+      body: message,
+      icon: '/logo192.png',
+      url: '/dashboard'
+    });
+
+    const deliveryPromises = subscriptions.map(async (subscription) => {
+      try {
+        await webpush.sendNotification(subscription, payload);
+        
+        notification.deliveryStatus.push({
+          userId: subscription.userId._id,
+          status: 'delivered',
+          deliveredAt: new Date()
+        });
+        
+        return { success: true, userId: subscription.userId._id };
+      } catch (error) {
+        console.error('Notification delivery failed:', error);
+        
+        if (error.statusCode === 410) {
+          await Subscription.findByIdAndUpdate(subscription._id, { isActive: false });
+        }
+        
+        notification.deliveryStatus.push({
+          userId: subscription.userId._id,
+          status: 'failed',
+          error: error.message
+        });
+        
+        return { success: false, userId: subscription.userId._id, error: error.message };
+      }
+    });
+
+    const results = await Promise.all(deliveryPromises);
+    const delivered = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+
+    notification.totalDelivered = delivered;
+    notification.totalFailed = failed;
+    await notification.save();
+
+    console.log('📧 ✅ Targeted notification sent:', { delivered, failed });
 
     res.json({
       success: true,
-      message: 'Targeted notification sent successfully (mock)',
-      data: mockResult
+      message: 'Targeted notification sent successfully',
+      data: {
+        notificationId: notification._id,
+        totalSent: subscriptions.length,
+        delivered,
+        failed
+      }
     });
 
   } catch (error) {
-    console.error('❌ Send targeted notification error:', error);
+    console.error('📧 ❌ Send targeted notification error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to send targeted notification'
@@ -102,10 +257,9 @@ router.post('/send-to-users', mockAuth, async (req, res) => {
 });
 
 // Subscribe to push notifications
-router.post('/subscribe', mockAuth, async (req, res) => {
+router.post('/subscribe', verifyToken, async (req, res) => {
   try {
-    console.log('📧 Subscribe route called');
-    console.log('Request body:', req.body);
+    console.log('📧 Subscribe route called for user:', req.user.username);
 
     const { endpoint, keys } = req.body;
 
@@ -116,11 +270,35 @@ router.post('/subscribe', mockAuth, async (req, res) => {
       });
     }
 
-    console.log('📧 Mock subscription saved for user:', req.user.username);
+    // Check if subscription already exists
+    const existingSubscription = await Subscription.findOne({
+      userId: req.user._id,
+      endpoint
+    });
+
+    if (existingSubscription) {
+      // Update existing subscription
+      existingSubscription.keys = keys;
+      existingSubscription.isActive = true;
+      existingSubscription.userAgent = req.get('User-Agent');
+      await existingSubscription.save();
+      console.log('📧 Subscription updated for user:', req.user.username);
+    } else {
+      // Create new subscription
+      const subscription = new Subscription({
+        userId: req.user._id,
+        endpoint,
+        keys,
+        userAgent: req.get('User-Agent')
+      });
+      
+      await subscription.save();
+      console.log('📧 New subscription created for user:', req.user.username);
+    }
 
     res.json({
       success: true,
-      message: 'Subscription saved successfully (mock)'
+      message: 'Subscription saved successfully'
     });
 
   } catch (error) {
@@ -133,47 +311,35 @@ router.post('/subscribe', mockAuth, async (req, res) => {
 });
 
 // Get notification history (Admin only)
-router.get('/history', mockAuth, async (req, res) => {
+router.get('/history', verifyToken, requireAdmin, async (req, res) => {
   try {
     console.log('📧 History route called');
     
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
 
-    // Mock notification history
-    const mockNotifications = [
-      {
-        _id: 'notification-1',
-        title: 'Test Notification 1',
-        message: 'This is a test notification',
-        sentBy: { username: 'admin', email: 'admin@test.com' },
-        totalSent: 5,
-        totalDelivered: 4,
-        totalFailed: 1,
-        createdAt: new Date()
-      },
-      {
-        _id: 'notification-2',
-        title: 'Test Notification 2',
-        message: 'Another test notification',
-        sentBy: { username: 'admin', email: 'admin@test.com' },
-        totalSent: 3,
-        totalDelivered: 3,
-        totalFailed: 0,
-        createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000) // 1 day ago
-      }
-    ];
+    const [notifications, total] = await Promise.all([
+      Notification.find()
+        .populate('sentBy', 'username email')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Notification.countDocuments()
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
 
     res.json({
       success: true,
       data: {
-        notifications: mockNotifications,
+        notifications,
         pagination: {
           currentPage: page,
-          totalPages: 1,
-          totalNotifications: mockNotifications.length,
-          hasNext: false,
-          hasPrev: false
+          totalPages,
+          totalNotifications: total,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
         }
       }
     });
@@ -188,45 +354,46 @@ router.get('/history', mockAuth, async (req, res) => {
 });
 
 // Get all users (Admin only)
-router.get('/users', mockAuth, async (req, res) => {
+router.get('/users', verifyToken, requireAdmin, async (req, res) => {
   try {
     console.log('📧 Users route called');
 
-    // Mock users data
-    const mockUsers = [
+    // Aggregate users with subscription data
+    const users = await User.aggregate([
       {
-        _id: 'user-1',
-        username: 'testuser1',
-        email: 'user1@test.com',
-        role: 'user',
-        createdAt: new Date(),
-        hasActiveSubscription: true,
-        subscriptionCount: 1
+        $lookup: {
+          from: 'subscriptions',
+          localField: '_id',
+          foreignField: 'userId',
+          as: 'subscriptions'
+        }
       },
       {
-        _id: 'user-2',
-        username: 'testuser2',
-        email: 'user2@test.com',
-        role: 'user',
-        createdAt: new Date(),
-        hasActiveSubscription: false,
-        subscriptionCount: 0
+        $addFields: {
+          hasActiveSubscription: {
+            $gt: [
+              { $size: { $filter: { input: '$subscriptions', cond: { $eq: ['$$this.isActive', true] } } } },
+              0
+            ]
+          },
+          subscriptionCount: { $size: '$subscriptions' }
+        }
       },
       {
-        _id: 'user-3',
-        username: 'admin',
-        email: 'admin@test.com',
-        role: 'admin',
-        createdAt: new Date(),
-        hasActiveSubscription: true,
-        subscriptionCount: 2
+        $project: {
+          password: 0,
+          subscriptions: 0
+        }
+      },
+      {
+        $sort: { createdAt: -1 }
       }
-    ];
+    ]);
 
     res.json({
       success: true,
       data: {
-        users: mockUsers
+        users
       }
     });
 
@@ -235,6 +402,55 @@ router.get('/users', mockAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch users'
+    });
+  }
+});
+
+// Unsubscribe from notifications
+router.delete('/unsubscribe', verifyToken, async (req, res) => {
+  try {
+    console.log('📧 Unsubscribe route called');
+
+    await Subscription.updateMany(
+      { userId: req.user._id },
+      { isActive: false }
+    );
+
+    res.json({
+      success: true,
+      message: 'Unsubscribed successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Unsubscribe error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to unsubscribe'
+    });
+  }
+});
+
+// Get user's subscription status
+router.get('/subscription-status', verifyToken, async (req, res) => {
+  try {
+    const activeSubscriptions = await Subscription.countDocuments({
+      userId: req.user._id,
+      isActive: true
+    });
+
+    res.json({
+      success: true,
+      data: {
+        hasActiveSubscription: activeSubscriptions > 0,
+        subscriptionCount: activeSubscriptions
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Subscription status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch subscription status'
     });
   }
 });

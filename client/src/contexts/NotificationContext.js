@@ -154,6 +154,8 @@ export const NotificationProvider = ({ children }) => {
   const sendToAll = async (notificationData) => {
     try {
       setLoading(true);
+      console.log('Sending notification to all:', notificationData);
+      
       const response = await axios.post('/notifications/send-to-all', notificationData);
       
       if (response.data.success) {
@@ -174,6 +176,8 @@ export const NotificationProvider = ({ children }) => {
   const sendToUsers = async (notificationData) => {
     try {
       setLoading(true);
+      console.log('Sending notification to users:', notificationData);
+      
       const response = await axios.post('/notifications/send-to-users', notificationData);
       
       if (response.data.success) {

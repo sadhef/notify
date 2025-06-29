@@ -1,52 +1,83 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { body, validationResult } = require('express-validator');
+const { User } = require('../models');
+const { verifyToken } = require('../middleware/auth');
 const router = express.Router();
 
-console.log('🔐 Loading auth routes...');
+// Validation middleware
+const registerValidation = [
+  body('username').isLength({ min: 3 }).trim().escape(),
+  body('email').isEmail().normalizeEmail(),
+  body('password').isLength({ min: 6 }),
+  body('role').isIn(['user', 'admin']).optional()
+];
 
-// Simple middleware to log requests
-router.use((req, res, next) => {
-  console.log(`🔐 Auth route: ${req.method} ${req.path}`);
-  next();
-});
+const loginValidation = [
+  body('login').notEmpty().trim().escape(),
+  body('password').notEmpty()
+];
 
 // Register new user
-router.post('/register', async (req, res) => {
+router.post('/register', registerValidation, async (req, res) => {
   try {
-    console.log('🔐 Register route called');
-    console.log('Request body:', req.body);
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
     
     const { username, email, password, role = 'user' } = req.body;
 
-    if (!username || !email || !password) {
+    // Check if user already exists
+    const existingUser = await User.findOne({
+      $or: [{ email }, { username }]
+    });
+
+    if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'Username, email, and password are required'
+        message: 'User with this email or username already exists'
       });
     }
 
-    // Mock user creation
-    const mockUser = {
-      id: 'mock-user-' + Date.now(),
+    // Create new user
+    const user = new User({
       username,
       email,
+      password, // Will be hashed by pre-save middleware
       role
-    };
+    });
 
-    const mockToken = 'mock-jwt-token-' + Date.now();
+    await user.save();
 
-    console.log('🔐 Mock user registered:', mockUser);
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     res.status(201).json({
       success: true,
-      message: 'User registered successfully (mock)',
+      message: 'User registered successfully',
       data: {
-        token: mockToken,
-        user: mockUser
+        token,
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          role: user.role
+        }
       }
     });
 
   } catch (error) {
-    console.error('❌ Registration error:', error);
+    console.error('Registration error:', error);
     res.status(500).json({
       success: false,
       message: 'Server error during registration'
@@ -55,51 +86,66 @@ router.post('/register', async (req, res) => {
 });
 
 // Login user
-router.post('/login', async (req, res) => {
+router.post('/login', loginValidation, async (req, res) => {
   try {
-    console.log('🔐 Login route called');
-    console.log('Request body:', req.body);
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
     
     const { login, password } = req.body;
 
-    if (!login || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Username/email and password are required'
-      });
-    }
+    // Find user by email or username
+    const user = await User.findOne({
+      $or: [
+        { email: login },
+        { username: login }
+      ]
+    });
 
-    // Mock login validation
-    if (password === 'wrongpassword') {
+    if (!user || !user.isActive) {
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
       });
     }
 
-    // Mock successful login
-    const mockUser = {
-      id: 'mock-user-' + Date.now(),
-      username: login,
-      email: login.includes('@') ? login : `${login}@test.com`,
-      role: login.toLowerCase().includes('admin') ? 'admin' : 'user'
-    };
+    // Check password
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
 
-    const mockToken = 'mock-jwt-token-' + Date.now();
-
-    console.log('🔐 Mock user logged in:', mockUser);
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     res.json({
       success: true,
-      message: 'Login successful (mock)',
+      message: 'Login successful',
       data: {
-        token: mockToken,
-        user: mockUser
+        token,
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          role: user.role
+        }
       }
     });
 
   } catch (error) {
-    console.error('❌ Login error:', error);
+    console.error('Login error:', error);
     res.status(500).json({
       success: false,
       message: 'Server error during login'
@@ -108,27 +154,21 @@ router.post('/login', async (req, res) => {
 });
 
 // Get current user profile
-router.get('/profile', async (req, res) => {
+router.get('/profile', verifyToken, async (req, res) => {
   try {
-    console.log('🔐 Profile route called');
-    
-    // Mock profile data
-    const mockUser = {
-      id: 'mock-user-profile',
-      username: 'testuser',
-      email: 'test@example.com',
-      role: 'user'
-    };
-
     res.json({
       success: true,
       data: {
-        user: mockUser
+        user: {
+          id: req.user._id,
+          username: req.user.username,
+          email: req.user.email,
+          role: req.user.role
+        }
       }
     });
-
   } catch (error) {
-    console.error('❌ Profile error:', error);
+    console.error('Profile error:', error);
     res.status(500).json({
       success: false,
       message: 'Server error'
@@ -138,14 +178,10 @@ router.get('/profile', async (req, res) => {
 
 // Logout
 router.post('/logout', (req, res) => {
-  console.log('🔐 Logout route called');
-  
   res.json({
     success: true,
     message: 'Logged out successfully'
   });
 });
-
-console.log('✅ Auth routes loaded successfully');
 
 module.exports = router;

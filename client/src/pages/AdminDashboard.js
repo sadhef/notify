@@ -12,9 +12,7 @@ const AdminDashboard = () => {
   const [selectedUsers, setSelectedUsers] = useState([]);
   const [notificationForm, setNotificationForm] = useState({
     title: '',
-    message: '',
-    icon: '/icon.png',
-    url: '/'
+    message: ''
   });
   const [sendingMode, setSendingMode] = useState('all'); // 'all' or 'selected'
 
@@ -61,29 +59,41 @@ const AdminDashboard = () => {
     e.preventDefault();
     
     if (!notificationForm.title.trim() || !notificationForm.message.trim()) {
+      alert('Title and message are required');
       return;
     }
 
     try {
+      // Create clean payload with only required fields
+      const payload = {
+        title: notificationForm.title.trim(),
+        message: notificationForm.message.trim()
+      };
+
+      console.log('Notification form data:', notificationForm);
+      console.log('Sending mode:', sendingMode);
+
       if (sendingMode === 'all') {
-        await sendToAll(notificationForm);
+        console.log('Sending to all with payload:', payload);
+        await sendToAll(payload);
       } else {
         if (selectedUsers.length === 0) {
           alert('Please select at least one user');
           return;
         }
-        await sendToUsers({
-          ...notificationForm,
+        const targetedPayload = {
+          ...payload,
           userIds: selectedUsers
-        });
+        };
+        console.log('Sending to selected users with payload:', targetedPayload);
+        console.log('Selected users:', selectedUsers);
+        await sendToUsers(targetedPayload);
       }
       
       // Reset form
       setNotificationForm({
         title: '',
-        message: '',
-        icon: '/icon.png',
-        url: '/'
+        message: ''
       });
       setSelectedUsers([]);
     } catch (error) {
@@ -267,11 +277,11 @@ const AdminDashboard = () => {
                 </div>
               )}
 
-              {/* Notification Form */}
+              {/* Notification Form - Simplified */}
               <form onSubmit={handleSendNotification} className="space-y-6">
                 <div>
                   <label htmlFor="title" className="block text-sm font-medium text-gray-700 mb-2">
-                    Notification Title
+                    Notification Title <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
@@ -291,7 +301,7 @@ const AdminDashboard = () => {
 
                 <div>
                   <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-2">
-                    Message
+                    Message <span className="text-red-500">*</span>
                   </label>
                   <textarea
                     id="message"
@@ -309,37 +319,29 @@ const AdminDashboard = () => {
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="icon" className="block text-sm font-medium text-gray-700 mb-2">
-                      Icon URL (optional)
-                    </label>
-                    <input
-                      type="text"
-                      id="icon"
-                      name="icon"
-                      value={notificationForm.icon}
-                      onChange={handleFormChange}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="/icon.png"
-                    />
+                {/* Preview */}
+                {notificationForm.title && notificationForm.message && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Preview:</h4>
+                    <div className="bg-white border border-gray-300 rounded-lg p-3 max-w-sm">
+                      <div className="flex items-start space-x-3">
+                        <div className="flex-shrink-0">
+                          <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
+                            <Bell className="w-4 h-4 text-white" />
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">
+                            {notificationForm.title}
+                          </p>
+                          <p className="text-sm text-gray-600 line-clamp-2">
+                            {notificationForm.message}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-
-                  <div>
-                    <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
-                      Click URL (optional)
-                    </label>
-                    <input
-                      type="text"
-                      id="url"
-                      name="url"
-                      value={notificationForm.url}
-                      onChange={handleFormChange}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="/"
-                    />
-                  </div>
-                </div>
+                )}
 
                 <button
                   type="submit"
@@ -355,6 +357,11 @@ const AdminDashboard = () => {
                     <div className="flex items-center">
                       <Send className="h-4 w-4 mr-2" />
                       Send Notification
+                      {sendingMode === 'selected' && selectedUsers.length > 0 && (
+                        <span className="ml-2 bg-blue-500 text-xs px-2 py-1 rounded-full">
+                          {selectedUsers.length}
+                        </span>
+                      )}
                     </div>
                   )}
                 </button>

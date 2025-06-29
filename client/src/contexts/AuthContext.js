@@ -4,8 +4,8 @@ import { toast } from 'react-toastify';
 
 const AuthContext = createContext();
 
-// Configure axios defaults
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000/api';
+// Use relative URLs so proxy works correctly
+const API_BASE_URL = '/api';
 axios.defaults.baseURL = API_BASE_URL;
 
 // Add token to requests
@@ -15,7 +15,7 @@ axios.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
-    console.log('Making request to:', config.baseURL + config.url);
+    console.log('Making request to:', config.url);
     return config;
   },
   (error) => {
@@ -106,6 +106,7 @@ export const AuthProvider = ({ children }) => {
   const register = async (registerData) => {
     try {
       console.log('Attempting registration with:', registerData);
+      
       const response = await axios.post('/auth/register', registerData);
       
       if (response.data.success) {
